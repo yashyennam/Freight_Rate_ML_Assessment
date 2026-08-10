@@ -55,6 +55,7 @@ Outputs:
 | `scorer_results/candidate_december.png` | chart produced by the provided `score.py` |
 | `reports/validation_results.md` | all five validation experiments |
 | `reports/feature_importance.md` | gain breakdown for the residual model |
+| `reports/Freight_Rate_Prediction_Report.pdf` | the write-up (also as `.docx`) |
 
 ---
 
