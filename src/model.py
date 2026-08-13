@@ -51,13 +51,6 @@ def metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
     }
 
 
-def format_metrics(name: str, values: dict[str, float]) -> str:
-    return (
-        f"{name:<28} MAE ${values['MAE']:>7.2f} | RMSE ${values['RMSE']:>7.2f} | "
-        f"MAPE {values['MAPE']:>5.2f}% | R2 {values['R2']:>6.4f} | bias ${values['bias']:>+7.2f}"
-    )
-
-
 LGB_PARAMS = {
     "objective": "regression",
     "metric": "l2",
@@ -149,7 +142,7 @@ class HybridModel:
         self.coefficients_, *_ = np.linalg.lstsq(design, target.to_numpy(dtype=float), rcond=None)
         residual = target.to_numpy(dtype=float) - design @ self.coefficients_
 
-        self.booster_, _ = train_lightgbm(
+        self.booster_ = train_lightgbm(
             frame, self.residual_features, pd.Series(residual, index=frame.index),
             num_boost_round=self.rounds,
         )
@@ -170,10 +163,16 @@ def train_lightgbm(
     train: pd.DataFrame,
     features: list[str],
     target: pd.Series,
-    num_boost_round: int = 1500,
-    valid: tuple[pd.DataFrame, pd.Series] | None = None,
-    early_stopping: int = 100,
-) -> tuple[object, int]:
+    num_boost_round: int = config.N_BOOST_ROUNDS,
+) -> object:
+    """Fit a booster for a fixed number of rounds.
+
+    The round count is fixed rather than early-stopped: an early-stopping split
+    would have to come from the training window, and every such split here is
+    either random (which the quote_signal analysis shows is misleading) or eats
+    the most recent month, which is the most valuable training data for a
+    forward prediction.
+    """
     import lightgbm as lgb
 
     dataset = lgb.Dataset(
@@ -182,19 +181,6 @@ def train_lightgbm(
         categorical_feature=[f for f in ("equipment_code",) if f in features],
         free_raw_data=False,
     )
-    callbacks = [lgb.log_evaluation(period=0)]
-    valid_sets = None
-    if valid is not None:
-        valid_frame, valid_target = valid
-        valid_sets = [lgb.Dataset(valid_frame[features], label=valid_target, reference=dataset)]
-        callbacks.append(lgb.early_stopping(early_stopping, verbose=False))
-
-    booster = lgb.train(
-        LGB_PARAMS,
-        dataset,
-        num_boost_round=num_boost_round,
-        valid_sets=valid_sets,
-        callbacks=callbacks,
+    return lgb.train(
+        LGB_PARAMS, dataset, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(period=0)]
     )
-    best = booster.best_iteration or num_boost_round
-    return booster, best

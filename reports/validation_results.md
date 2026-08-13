@@ -28,12 +28,12 @@ column is pure noise.
 
 | Split | Feature set | MAE | RMSE | MAPE | R2 |
 | --- | --- | --- | --- | --- | --- |
-| random 80/20 | with quote_signal | $49.57 | $203.14 | 2.17% | 0.9783 |
-| random 80/20 | without quote_signal | $56.82 | $206.17 | 2.52% | 0.9777 |
-| forward (<=Sep -> Oct) | with quote_signal | $77.90 | $289.85 | 3.44% | 0.9575 |
-| forward (<=Sep -> Oct) | without quote_signal | $109.73 | $303.55 | 4.78% | 0.9534 |
-| forward (<=Jul -> Aug) | with quote_signal | $107.00 | $241.54 | 5.42% | 0.9677 |
-| forward (<=Jul -> Aug) | without quote_signal | $70.87 | $219.26 | 3.22% | 0.9734 |
+| random 80/20 | with quote_signal | $90.94 | $589.18 | 4.12% | 0.8415 |
+| random 80/20 | without quote_signal | $97.96 | $589.82 | 4.46% | 0.8412 |
+| forward (<=Sep -> Oct) | with quote_signal | $126.84 | $653.01 | 5.84% | 0.8175 |
+| forward (<=Sep -> Oct) | without quote_signal | $159.10 | $661.65 | 7.15% | 0.8126 |
+| forward (<=Jul -> Aug) | with quote_signal | $149.40 | $623.57 | 7.41% | 0.8212 |
+| forward (<=Jul -> Aug) | without quote_signal | $111.10 | $620.10 | 5.12% | 0.8232 |
 
 August is the informative row: it is the one *labelled* month sharing the
 November/December regime, and there `quote_signal` actively hurts.
@@ -43,12 +43,12 @@ It is dropped from the final feature set.
 
 | Model | MAE | RMSE | MAPE | R2 |
 | --- | --- | --- | --- | --- |
-| Global mean $/mi x distance | $216.54 | $395.93 | 9.53% | 0.9207 |
-| Lane mean $/mi x distance | $139.58 | $328.10 | 5.87% | 0.9455 |
-| Equipment x distance band | $98.33 | $294.37 | 4.82% | 0.9561 |
-| Ridge on log $/mi | $57.35 | $279.66 | 2.51% | 0.9604 |
-| LightGBM on log $/mi | $109.73 | $303.55 | 4.78% | 0.9534 |
-| Hybrid: linear level + LightGBM | $50.18 | $278.10 | 2.21% | 0.9609 |
+| Global mean $/mi x distance | $263.88 | $701.95 | 11.91% | 0.7891 |
+| Lane mean $/mi x distance | $187.36 | $671.54 | 8.24% | 0.8070 |
+| Equipment x distance band | $146.64 | $654.22 | 7.25% | 0.8168 |
+| Ridge on log $/mi | $105.80 | $646.24 | 4.96% | 0.8213 |
+| LightGBM on log $/mi | $159.10 | $661.65 | 7.15% | 0.8126 |
+| Hybrid: linear level + LightGBM | $99.50 | $645.31 | 4.69% | 0.8218 |
 
 ## E3  Rolling-origin validation
 
@@ -59,13 +59,13 @@ chosen on.
 
 | Train through | Test month | Rows | Plain LightGBM MAE | Hybrid MAE | Hybrid MAPE | Hybrid R2 |
 | --- | --- | --- | --- | --- | --- | --- |
-| month 4 | May | 4,860 | $59.44 | **$51.63** | 2.45% | 0.9947 |
-| month 5 | June | 4,739 | $100.49 | **$69.51** | 2.51% | 0.9520 |
-| month 6 | July | 4,864 | $58.44 | **$90.62** | 3.93% | 0.9711 |
-| month 7 | August | 4,709 | $70.87 | **$68.90** | 3.00% | 0.9739 |
-| month 8 | September | 4,627 | $129.17 | **$62.49** | 2.79% | 0.9748 |
-| month 9 | October | 4,793 | $109.73 | **$50.18** | 2.21% | 0.9609 |
-| **mean** | | | **$88.02** | **$65.56** | **2.82%** | **0.9712** |
+| month 4 | May | 4,913 | $96.26 | **$86.16** | 4.35% | 0.8620 |
+| month 5 | June | 4,783 | $138.88 | **$118.98** | 4.31% | 0.8083 |
+| month 6 | July | 4,912 | $102.27 | **$120.23** | 5.01% | 0.8264 |
+| month 7 | August | 4,759 | $111.10 | **$104.66** | 4.77% | 0.8264 |
+| month 8 | September | 4,670 | $171.08 | **$107.57** | 4.48% | 0.8363 |
+| month 9 | October | 4,853 | $159.10 | **$99.50** | 4.69% | 0.8218 |
+| **mean** | | | **$129.78** | **$106.18** | **4.60%** | **0.8302** |
 
 ## E5  How much of the trend to extrapolate
 
@@ -74,13 +74,13 @@ chosen on.
 
 | Damping | MAE Jun | MAE Jul | MAE Aug | MAE Sep | MAE Oct | mean MAE |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0.00 | $76.38 | $75.10 | $61.90 | $66.30 | $50.05 | **$65.95** |
-| 0.25 | $74.49 | $78.78 | $63.57 | $65.31 | $49.93 | **$66.42** |
-| 0.50 | $72.70 | $82.60 | $65.30 | $64.34 | $49.92 | **$66.97** |
-| 0.75 | $71.04 | $86.56 | $67.07 | $63.40 | $50.00 | **$67.61** |
-| 1.00 | $69.51 | $90.62 | $68.90 | $62.49 | $50.18 | **$68.34** |
+| 0.00 | $118.98 | $120.23 | $104.66 | $107.57 | $99.50 | **$110.19** |
+| 0.25 | $117.03 | $123.90 | $106.31 | $106.59 | $99.38 | **$110.64** |
+| 0.50 | $115.22 | $127.72 | $108.04 | $105.64 | $99.34 | **$111.19** |
+| 0.75 | $113.56 | $131.64 | $109.81 | $104.72 | $99.40 | **$111.83** |
+| 1.00 | $112.04 | $135.66 | $111.64 | $103.83 | $99.55 | **$112.54** |
 
-Selected `trend_damping = 0.00` (mean MAE $65.95).
+Selected `trend_damping = 0.00` (mean MAE $110.19).
 
 Note this is a one-month-ahead sweep, while December is two months past
 the end of training. The chosen value is applied to both horizons.
@@ -89,9 +89,9 @@ the end of training. The chosen value is applied to both horizons.
 
 | Feature set | MAE | RMSE | MAPE | R2 | dMAE vs all |
 | --- | --- | --- | --- | --- | --- |
-| All features | $109.73 | $303.55 | 4.78% | 0.9534 | +0.00 |
-| - market_index | $83.04 | $291.14 | 3.66% | 0.9571 | -26.69 |
-| - calendar | $86.46 | $293.01 | 3.77% | 0.9566 | -23.27 |
-| - geography | $113.08 | $306.21 | 4.88% | 0.9526 | +3.35 |
-| - target encodings | $112.08 | $304.66 | 4.86% | 0.9530 | +2.35 |
-| - weight | $112.95 | $306.44 | 4.91% | 0.9525 | +3.23 |
+| All features | $159.10 | $661.65 | 7.15% | 0.8126 | +0.00 |
+| - market_index | $133.10 | $654.98 | 6.10% | 0.8164 | -25.99 |
+| - calendar | $135.18 | $656.42 | 6.15% | 0.8156 | -23.92 |
+| - geography | $163.93 | $663.73 | 7.23% | 0.8115 | +4.83 |
+| - target encodings | $160.00 | $662.12 | 7.17% | 0.8124 | +0.91 |
+| - weight | $162.29 | $663.15 | 7.29% | 0.8118 | +3.19 |

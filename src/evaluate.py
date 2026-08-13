@@ -23,20 +23,43 @@ from . import config, data, features, model
 
 
 def prepare(frames: dict) -> pd.DataFrame:
-    """Clean training frame -> model matrix with out-of-fold encodings."""
-    train, _ = data.impute(frames["train"])
-    train = features.build_base(train, frames["coordinates"])
-    train["log_rpm"] = model.to_log_rpm(train[config.TARGET], train["distance"])
-    return features.out_of_fold_encoding(train, train["log_rpm"])
+    """Featurised frame with **no** outlier filter and **no** encodings yet.
+
+    Both are deliberately deferred to `make_fold`. Filtering outliers here would
+    also strip them out of every test fold, which flatters the metrics; encoding
+    here would let a fold's training rows carry statistics computed from months
+    that fold is supposed to be predicting.
+    """
+    raw = data.load_raw(config.TRAIN_PATH)
+    raw, _ = data.impute(raw)
+    raw = features.build_base(raw, frames["coordinates"])
+    raw["log_rpm"] = model.to_log_rpm(raw[config.TARGET], raw["distance"])
+    return raw
+
+
+def make_fold(
+    frame: pd.DataFrame, train_mask: pd.Series, test_mask: pd.Series
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build one fold: training rows cleaned and encoded, test rows untouched.
+
+    The outlier filter is a *training* decision, so the test half keeps its
+    extreme loads and the reported error includes them. Encodings are computed
+    out-of-fold within this fold's training window only.
+    """
+    train = frame[train_mask].copy()
+    rate_per_mile = train[config.TARGET] / train["distance"]
+    train = train[rate_per_mile.between(config.RPM_LOWER, config.RPM_UPPER)].reset_index(drop=True)
+    train = features.out_of_fold_encoding(train, train["log_rpm"])
+    return train, frame[test_mask].copy()
 
 
 def fit_and_score(
     train: pd.DataFrame,
     test: pd.DataFrame,
     feature_list: list[str],
-    rounds: int = 900,
+    rounds: int = config.N_BOOST_ROUNDS,
     hybrid: bool = False,
-    trend_damping: float = 1.0,
+    trend_damping: float = config.TREND_DAMPING,
 ) -> dict[str, float]:
     """Fit on `train`, score on `test`, with encodings refit on train only."""
     encoder = features.TargetEncoder()
@@ -47,7 +70,7 @@ def fit_and_score(
         fitted = model.HybridModel(feature_list, trend_damping=trend_damping, rounds=rounds)
         fitted.fit(train, train["log_rpm"])
     else:
-        booster, _ = model.train_lightgbm(
+        booster = model.train_lightgbm(
             train, feature_list, train["log_rpm"], num_boost_round=rounds
         )
         residuals = train["log_rpm"].to_numpy() - booster.predict(train[feature_list])
@@ -75,8 +98,8 @@ def experiment_split_design(frame: pd.DataFrame) -> str:
 
     # -- random split -------------------------------------------------------
     shuffled = frame.sample(frac=1.0, random_state=config.RANDOM_STATE).reset_index(drop=True)
-    cut = int(len(shuffled) * 0.8)
-    rnd_train, rnd_test = shuffled.iloc[:cut].copy(), shuffled.iloc[cut:].copy()
+    is_train = pd.Series(shuffled.index < int(len(shuffled) * 0.8), index=shuffled.index)
+    rnd_train, rnd_test = make_fold(shuffled, is_train, ~is_train)
 
     rows = []
     rows.append(("random 80/20", "with quote_signal", fit_and_score(rnd_train, rnd_test, with_qs)))
@@ -84,12 +107,12 @@ def experiment_split_design(frame: pd.DataFrame) -> str:
 
     # -- forward split: train <= September, test October ---------------------
     month = frame[config.DATE_COL].dt.month
-    fwd_train, fwd_test = frame[month <= 9].copy(), frame[month == 10].copy()
+    fwd_train, fwd_test = make_fold(frame, month <= 9, month == 10)
     rows.append(("forward (<=Sep -> Oct)", "with quote_signal", fit_and_score(fwd_train, fwd_test, with_qs)))
     rows.append(("forward (<=Sep -> Oct)", "without quote_signal", fit_and_score(fwd_train, fwd_test, without_qs)))
 
     # -- forward split into August, the month whose regime matches Nov/Dec ---
-    aug_train, aug_test = frame[month <= 7].copy(), frame[month == 8].copy()
+    aug_train, aug_test = make_fold(frame, month <= 7, month == 8)
     rows.append(("forward (<=Jul -> Aug)", "with quote_signal", fit_and_score(aug_train, aug_test, with_qs)))
     rows.append(("forward (<=Jul -> Aug)", "without quote_signal", fit_and_score(aug_train, aug_test, without_qs)))
 
@@ -112,7 +135,7 @@ def experiment_split_design(frame: pd.DataFrame) -> str:
 def experiment_baselines(frame: pd.DataFrame) -> str:
     """E2: simple baselines on the forward October holdout."""
     month = frame[config.DATE_COL].dt.month
-    train, test = frame[month <= 9].copy(), frame[month == 10].copy()
+    train, test = make_fold(frame, month <= 9, month == 10)
     actual = test[config.TARGET].to_numpy()
 
     results: list[tuple[str, dict[str, float]]] = []
@@ -136,9 +159,13 @@ def experiment_baselines(frame: pd.DataFrame) -> str:
 
     from sklearn.linear_model import Ridge
 
+    # `test` arrives unencoded from make_fold; the Ridge design needs the same
+    # encoder the model stage uses, fitted on this fold's training rows only.
+    test_encoded = features.TargetEncoder().fit(train, train["log_rpm"]).transform(test)
+
     numeric = [f for f in features.FEATURES if f != "equipment_code"]
     design_train = pd.get_dummies(train[numeric + ["equipment"]], columns=["equipment"]).astype(float)
-    design_test = pd.get_dummies(test[numeric + ["equipment"]], columns=["equipment"]).astype(float)
+    design_test = pd.get_dummies(test_encoded[numeric + ["equipment"]], columns=["equipment"]).astype(float)
     design_test = design_test.reindex(columns=design_train.columns, fill_value=0.0)
     ridge = Ridge(alpha=1.0).fit(design_train, train["log_rpm"])
     predicted = np.exp(ridge.predict(design_test)) * test["distance"]
@@ -178,7 +205,7 @@ def experiment_rolling_origin(frame: pd.DataFrame) -> str:
     plain_all, hybrid_all = [], []
     names = {5: "May", 6: "June", 7: "July", 8: "August", 9: "September", 10: "October"}
     for cutoff in range(4, 10):
-        train, test = frame[month <= cutoff].copy(), frame[month == cutoff + 1].copy()
+        train, test = make_fold(frame, month <= cutoff, month == cutoff + 1)
         if test.empty:
             continue
         plain = fit_and_score(train, test, features.GBM_FEATURES)
@@ -222,7 +249,7 @@ def experiment_trend_damping(frame: pd.DataFrame) -> str:
     for damping in dampings:
         maes = []
         for cutoff in range(5, 10):
-            train, test = frame[month <= cutoff].copy(), frame[month == cutoff + 1].copy()
+            train, test = make_fold(frame, month <= cutoff, month == cutoff + 1)
             m = fit_and_score(train, test, features.FEATURES, hybrid=True, trend_damping=damping)
             maes.append(m["MAE"])
         mean_mae = float(np.mean(maes))
@@ -245,7 +272,7 @@ def experiment_trend_damping(frame: pd.DataFrame) -> str:
 def experiment_ablation(frame: pd.DataFrame) -> str:
     """E4: what each block of features contributes on the October holdout."""
     month = frame[config.DATE_COL].dt.month
-    train, test = frame[month <= 9].copy(), frame[month == 10].copy()
+    train, test = make_fold(frame, month <= 9, month == 10)
 
     blocks = {
         "All features": features.GBM_FEATURES,

@@ -56,7 +56,7 @@ BASE_FEATURES = [
     "days_to_month_end",
 ]
 
-ENCODED_FEATURES = ["lane_te", "pickup_te", "delivery_te", "lane_count"]
+ENCODED_FEATURES = ["lane_te", "pickup_te", "delivery_te", "lane_frequency"]
 
 FEATURES = BASE_FEATURES + ENCODED_FEATURES
 
@@ -64,8 +64,6 @@ FEATURES = BASE_FEATURES + ENCODED_FEATURES
 # a tree given a raw time index simply memorises it and then predicts the last
 # training bucket forever; it is only meaningful inside the linear backbone.
 GBM_FEATURES = [f for f in FEATURES if f != "trend_days"]
-
-CATEGORICAL = ["equipment_code"]
 
 
 def attach_coordinates(frame: pd.DataFrame, coordinates: pd.DataFrame) -> pd.DataFrame:
@@ -159,7 +157,7 @@ class TargetEncoder:
         self.smoothing = smoothing
         self.prior_: float = 0.0
         self.maps_: dict[str, pd.Series] = {}
-        self.counts_: pd.Series | None = None
+        self.frequencies_: pd.Series | None = None
 
     def fit(self, frame: pd.DataFrame, target: pd.Series) -> "TargetEncoder":
         self.prior_ = float(target.mean())
@@ -167,14 +165,18 @@ class TargetEncoder:
             stats = target.groupby(frame[key]).agg(["mean", "count"])
             weight = stats["count"] / (stats["count"] + self.smoothing)
             self.maps_[name] = weight * stats["mean"] + (1 - weight) * self.prior_
-        self.counts_ = frame["lane"].value_counts()
+        # Stored as a share of the fitted rows, not a raw count. The encoder is
+        # fitted on 4/5 of the data when encoding out-of-fold but on all of it
+        # when scoring, so a raw count would arrive at scoring time ~1.33x
+        # larger than any threshold the booster learned.
+        self.frequencies_ = frame["lane"].value_counts() / len(frame)
         return self
 
     def transform(self, frame: pd.DataFrame) -> pd.DataFrame:
         result = frame.copy()
         for name, key in (("lane_te", "lane"), ("pickup_te", "pickup"), ("delivery_te", "delivery")):
             result[name] = result[key].map(self.maps_[name]).fillna(self.prior_)
-        result["lane_count"] = result["lane"].map(self.counts_).fillna(0).astype(float)
+        result["lane_frequency"] = result["lane"].map(self.frequencies_).fillna(0.0).astype(float)
         return result
 
     def fit_transform(self, frame: pd.DataFrame, target: pd.Series) -> pd.DataFrame:

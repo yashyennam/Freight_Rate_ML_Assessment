@@ -69,9 +69,10 @@ def load_raw(path: Path) -> pd.DataFrame:
 def impute(frame: pd.DataFrame, weight_median: float | None = None) -> tuple[pd.DataFrame, float]:
     """Fill the two columns that carry missing values, flagging both.
 
-    `market_index` is a market-wide daily signal (between-day variance is 6.6x
-    the within-day variance), so a same-day mean is a far better estimate than
-    a global constant. `weight` has no such structure and gets a median fill.
+    `market_index` is a market-wide daily signal -- its between-day standard
+    deviation (0.165) is 6.6x its mean within-day standard deviation (0.025) --
+    so a same-day mean is a far better estimate than a global constant.
+    `weight` has no such structure and gets a median fill.
     """
     result = frame.copy()
 
@@ -113,10 +114,6 @@ def clean_training(frame: pd.DataFrame) -> tuple[pd.DataFrame, QualityReport]:
 
     report.rows_out = len(result)
     return result.reset_index(drop=True), report
-
-
-def rate_per_mile(frame: pd.DataFrame) -> pd.Series:
-    return frame[config.TARGET] / frame["distance"]
 
 
 def city_coordinates(*frames: pd.DataFrame) -> pd.DataFrame:

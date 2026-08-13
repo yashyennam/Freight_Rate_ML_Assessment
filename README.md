@@ -12,17 +12,21 @@ single-lane scenario for every day of December.
 ## Headline result
 
 Rolling-origin validation (train on everything up to month *m*, predict month
-*m+1*), averaged over six folds:
+*m+1*), averaged over six folds. Test folds keep their outliers, so these are
+not flattered:
 
-| Model | MAE | RMSE | MAPE | R² |
-| --- | --- | --- | --- | --- |
-| Global mean $/mi × distance | $216.54 | $395.93 | 9.53% | 0.9207 |
-| Lane mean $/mi × distance | $139.58 | $328.10 | 5.87% | 0.9455 |
-| Plain LightGBM | $88.02 | — | — | — |
-| **Hybrid (linear level + LightGBM residual)** | **$65.56** | **$242** | **2.82%** | **0.9712** |
+| Model | MAE | MAPE | R² |
+| --- | --- | --- | --- |
+| Global mean $/mi × distance | $263.88 | 11.91% | 0.7891 |
+| Lane mean $/mi × distance | $187.36 | 8.24% | 0.8070 |
+| Plain LightGBM | $129.78 | — | — |
+| Ridge on log $/mi | $105.80 | 4.96% | 0.8213 |
+| **Hybrid (linear level + LightGBM residual)** | **$106.18** | **4.60%** | **0.8302** |
 
-On the October holdout the final model reaches **MAE $50.05 / MAPE 2.21%**, with
-a median absolute percentage error of **1.36%**.
+Those aggregates are dominated by a thin tail of anomalous loads. On typical
+freight the model is far tighter — **median APE 1.40%**, and $50.80 MAE once the
+~1% of loads priced far from anything their features imply are set aside. Both
+numbers appear below; neither is the whole story on its own.
 
 ---
 
@@ -91,12 +95,15 @@ The cost of getting this wrong is measurable (experiment E1):
 
 | Split | with `quote_signal` | without |
 | --- | --- | --- |
-| Random 80/20 | MAE **$49.57** | $56.82 |
-| Forward, → October | MAE **$77.90** | $109.73 |
-| Forward, → **August** (matches Nov/Dec regime) | MAE $107.00 | **$70.87** |
+| Random 80/20 | MAE **$90.94** | $97.96 |
+| Forward, → October | MAE **$126.84** | $159.10 |
+| Forward, → **August** (matches Nov/Dec regime) | MAE $149.40 | **$111.10** |
 
-A random split says keep it. The one fold that resembles the actual task says
-it inflates error by 51%. It is excluded from the final feature set.
+A random split says keep it. So does an October holdout — October is one of the
+*sign-inverted* months, where a booster can learn the inversion and exploit it.
+Only August, the single labelled month in the same dead regime as November and
+December, tells the truth: there the feature inflates error by 34%. It is
+excluded from the final feature set.
 
 ### 2. The rate level is a market effect *plus* a time trend
 
@@ -116,7 +123,7 @@ This is the central modelling problem. Predictions are needed 30-90 days past
 the end of training, and **a tree cannot extrapolate a trend** — it flattens at
 the last bucket it ever saw. Left to its own devices, LightGBM used
 `market_index` to memorise individual day levels, which is why removing that
-feature entirely *improved* its forward score by $27 MAE (experiment E4).
+feature entirely *improved* its forward score by $26 MAE (experiment E4).
 
 ### 3. Rates ramp through the month
 
@@ -152,8 +159,10 @@ Fitted backbone coefficients (log $/mi):
 | `market_index` | +0.14313 | a 0.1 rise in the index adds ~1.4% to rate |
 | `trend_days`/100 | +0.02122 | +0.64% per month |
 | `log_distance` | −0.12594 | doubling haul length cuts $/mi by ~8.4% |
-| Reefer | +0.11901 | +11.9% over dry van |
-| Flatbed | +0.07799 | +7.8% over dry van |
+| Reefer | +0.11901 | +12.6% over dry van |
+| Flatbed | +0.07799 | +8.1% over dry van |
+
+(Coefficients are on the log scale; the percentages are `exp(β) − 1`.)
 
 ### Why the target is log rate-per-mile
 
@@ -161,9 +170,9 @@ Rate is close to multiplicative in distance (corr = 0.91), so dividing distance
 out leaves the model to learn the part that is genuinely uncertain. Logs make
 the loss proportional: a $200 miss on a 3,000-mile load is not the same mistake
 as a $200 miss on a 300-mile load. Predictions are converted back with Duan's
-smearing estimate (1.00107 here) so exponentiating a mean-unbiased log
-prediction is not biased low — this halved residual bias (−$6.07 → −$4.17) at no
-cost to MAE.
+smearing estimate (1.00106 here) so exponentiating a mean-unbiased log
+prediction is not biased low — this reduced residual bias by roughly a third at
+no cost to MAE.
 
 ### Trend damping
 
@@ -173,7 +182,7 @@ than an assumption (experiment E5):
 
 | Damping | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
 | --- | --- | --- | --- | --- | --- |
-| Mean MAE | **$65.95** | $66.42 | $66.97 | $67.61 | $68.34 |
+| Mean MAE | **$110.19** | $110.64 | $111.19 | $111.83 | $112.54 |
 
 `0.0` — hold the level at the last observed day — wins, and agrees with the raw
 series, where the level is flat across August-October (+4.3%, +6.1%, +6.3%
@@ -190,22 +199,32 @@ one-month horizon the sweep could actually test.
 month *m+1*, for *m* = April … September. Six folds, each one a miniature of the
 real task.
 
+Two rules keep the folds honest, and both matter more than they sound:
+
+- **The outlier filter is a training decision only.** Each fold's test half
+  keeps every extreme load, so the reported error includes the loads the model
+  cannot get right. Filtering globally before splitting would have removed ~1%
+  of each test month and cut the reported MAE roughly in half.
+- **Target encodings are computed inside each fold's training window.** Encoding
+  once over the whole period and then slicing would let a January training row
+  carry lane statistics drawn from the month it is being asked to predict.
+
 A random split was rejected on evidence, not principle — see finding 1. It
-overstates accuracy (MAE $49.57 vs $65.56) and, more damagingly, selects the
-wrong feature set.
+overstates accuracy (MAE $90.94 vs $106.18 for the same booster) and, more
+damagingly, selects the wrong feature set.
 
 August is treated as the **dress-rehearsal fold**: it is the only labelled month
 whose `quote_signal` regime matches November and December.
 
 | Train through | Test | Rows | Plain LightGBM | Hybrid |
 | --- | --- | --- | --- | --- |
-| April | May | 4,860 | $59.44 | **$51.63** |
-| May | June | 4,739 | $100.49 | **$69.51** |
-| June | July | 4,864 | **$58.44** | $90.62 |
-| July | August | 4,709 | $70.87 | **$68.90** |
-| August | September | 4,627 | $129.17 | **$62.49** |
-| September | October | 4,793 | $109.73 | **$50.18** |
-| **mean** | | | $88.02 | **$65.56** |
+| April | May | 4,913 | $96.26 | **$86.16** |
+| May | June | 4,783 | $138.88 | **$118.98** |
+| June | July | 4,912 | **$102.27** | $120.23 |
+| July | August | 4,759 | $111.10 | **$104.66** |
+| August | September | 4,670 | $171.08 | **$107.57** |
+| September | October | 4,853 | $159.10 | **$99.50** |
+| **mean** | | | $129.78 | **$106.18** |
 
 The hybrid wins five of six folds. July is the exception — June was the market
 peak and the level fell afterwards, so any model projecting forward from it
@@ -213,12 +232,26 @@ overshoots.
 
 ### Where the error actually is
 
-On the October fold: median APE **1.36%**, p95 **4.28%**, p99 **6.63%**. But
-**0.42% of rows carry 96.5% of the squared error** — a small set of loads priced
-far from anything their features imply. They are not identifiable in advance and
-survive every outlier filter that does not also discard good data, which is why
-RMSE ($278) sits so far above MAE ($50). No adjustment helps: the conditional
-mean is already the right prediction for them.
+On the October fold the model is tight for almost every load — **median APE
+1.40%** — but the mean is dragged by a small set of loads priced far from
+anything their features imply:
+
+| October fold | Rows | MAE | MAPE | median APE |
+| --- | --- | --- | --- | --- |
+| All rows | 4,853 | $99.50 | 4.69% | 1.40% |
+| Excluding $/mi outliers | 4,793 | $50.80 | 2.24% | 1.40% |
+
+Sixty rows — 1.2% of the fold — account for the entire gap between the two. The
+**0.42% of rows with APE above 25% carry 95.8% of the total squared error**,
+which is why RMSE sits an order of magnitude above MAE. They are not
+identifiable in advance, and no adjustment helps: the conditional mean is
+already the right prediction for them.
+
+Accuracy is even across segments — median APE is 1.37% (Dry Van), 1.37%
+(Reefer), 1.46% (Flatbed), and 1.31–1.48% across every distance band — so there
+is no segment the model quietly fails on. Calibration drifts slightly negative
+on the most expensive loads (mean bias −$16 in the top predicted-rate quintile,
+about −0.4%).
 
 ---
 
@@ -235,13 +268,25 @@ mean is already the right prediction for them.
 | $/mi outside [0.75, 6.0] | 513 (1.07%) | dropped from training only |
 | Rows used for training | 47,487 | — |
 
-`market_index` is a market-wide daily signal — between-day variance is 6.6× the
-within-day variance — so a same-day mean is a far better fill than a global
-constant. `weight` has no such structure and gets a median.
+`market_index` is a market-wide daily signal — its between-day standard
+deviation (0.165) is 6.6× its mean within-day standard deviation (0.025) — so a
+same-day mean is a far better fill than a global constant. `weight` has no such
+structure and gets a median.
 
 Outlier bounds come from the empirical distribution: the 0.1% tails sit at 0.44
 and 10.1 $/mi against a median of 2.15. They are applied to **training only** —
 test folds keep their outliers, so reported metrics are not flattered.
+
+The filter earns its place rather than being assumed. Training with the
+outliers left in, and scoring on the same untouched test folds:
+
+| Test month | Filtered training | Unfiltered training |
+| --- | --- | --- |
+| September | MAE **$107.57** | $115.63 |
+| October | MAE **$99.50** | $120.30 |
+
+RMSE is unchanged either way (±$1), so the filter buys typical-load accuracy
+without trading away tail performance.
 
 **Eight cities appear only in the validation set** (Allentown, Charlotte,
 Chicago, Jackson, Knoxville, Laredo, Norfolk, San Diego). The model never keys
@@ -265,7 +310,7 @@ for the fixed scenario, and it uses no information the model would not already
 have on those dates. This is done in `data.december_market_index`.
 
 The resulting curve for Lexington → Fort Wayne (360 mi, Dry Van, 32,000 lb)
-spans **$818.68 - $866.80** (5.9%), shaped by the daily market index and the
+spans **$823.85 - $869.51** (5.5%), shaped by the daily market index and the
 end-of-month ramp described above.
 
 ---

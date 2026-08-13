@@ -14,12 +14,17 @@ import pandas as pd
 from . import config, data, features, model
 
 
-def build_training_matrix(frames: dict) -> pd.DataFrame:
+def build_training_matrix(frames: dict) -> tuple[pd.DataFrame, float]:
+    """Return the training matrix and the weight median it was imputed with.
+
+    The median is returned explicitly rather than stashed on the frame: the same
+    value has to be reused when scoring, so that validation and December rows
+    are filled the way training rows were.
+    """
     train, weight_median = data.impute(frames["train"])
     train = features.build_base(train, frames["coordinates"])
     train["log_rpm"] = model.to_log_rpm(train[config.TARGET], train["distance"])
-    train.attrs["weight_median"] = weight_median
-    return features.out_of_fold_encoding(train, train["log_rpm"])
+    return features.out_of_fold_encoding(train, train["log_rpm"]), weight_median
 
 
 def build_scoring_matrix(
@@ -47,8 +52,7 @@ def main() -> None:
     print(report.to_markdown())
     print()
 
-    train = build_training_matrix(frames)
-    weight_median = train.attrs["weight_median"]
+    train, weight_median = build_training_matrix(frames)
 
     encoder = features.TargetEncoder().fit(train, train["log_rpm"])
     fitted = model.HybridModel(
